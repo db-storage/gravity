@@ -6,5 +6,6 @@ import (
 	_ "github.com/moiot/gravity/pkg/inputs/mysql"
 	_ "github.com/moiot/gravity/pkg/inputs/mysqlbatch"
 	_ "github.com/moiot/gravity/pkg/inputs/mysqlstream"
+	_ "github.com/moiot/gravity/pkg/inputs/pgsql_stream"
 	_ "github.com/moiot/gravity/pkg/inputs/tidb_kafka"
 )
