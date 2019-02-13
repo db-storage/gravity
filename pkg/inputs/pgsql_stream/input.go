@@ -18,8 +18,10 @@ import (
 )
 
 type PluginConfig struct {
-	Source        *utils.DBConfig `mapstructure:"source" toml:"source" json:"source"`
-	StartPosition uint64          `mapstructure:"start-position" toml:"start-position" json:"start-position"`
+	Source         *utils.DBConfig `mapstructure:"source" toml:"source" json:"source"`
+	Slot           string          `mapstructure:"slot" toml:"slot" json:"slot"`
+	ReplicationSet string          `mapstructure:"replication-set" toml:"replication-set" json:"replication-set"`
+	StartPosition  uint64          `mapstructure:"start-position" toml:"start-position" json:"start-position"`
 }
 
 type pgsqlStreamInputPlugin struct {
@@ -42,8 +44,7 @@ type pgsqlStreamInputPlugin struct {
 }
 
 func init() {
-	registry.RegisterPlugin(registry.InputPlugin, "pgsql_stream", &pgsqlStreamInputPlugin{}, false)
-	log.Info("pgsql_stream plugin registered")
+	registry.RegisterPlugin(registry.InputPlugin, "pgsql", &pgsqlStreamInputPlugin{}, false)
 
 }
 
@@ -51,15 +52,19 @@ func init() {
 func (plugin *pgsqlStreamInputPlugin) Configure(pipelineName string, data map[string]interface{}) error {
 	plugin.pipelineName = pipelineName
 
+	log.Info("[pgsql.Configure] enter")
 	cfg := PluginConfig{}
 	if err := mapstructure.Decode(data, &cfg); err != nil {
+		log.Infof("[pgsql.Configure] Decode failed: %v", err)
 		return errors.Trace(err)
 	}
 
 	if cfg.Source == nil {
+		log.Info("[pgsql.Configure] Source is nil")
 		return errors.Errorf("no pgsql source confgiured")
 	}
 	plugin.cfg = &cfg
+	log.Infof("[pgsql.Configure] config: %v", cfg)
 	return nil
 }
 
@@ -77,6 +82,7 @@ func (plugin *pgsqlStreamInputPlugin) NewPositionStore() (position_store.Positio
 }
 
 func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
+	log.Info("[pgsql] Starting")
 	plugin.emitter = emitter
 	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
 
@@ -91,14 +97,21 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 	cfg := plugin.cfg
 
 	tailerOpts := PglogicalTailerOpt{
-		session:       session,
-		emitter:       emitter,
-		ctx:           plugin.ctx,
-		sourceHost:    cfg.Source.Host,
-		positionStore: plugin.positionStore.(position_store.PgsqlPositionStore),
-		pipelineName:  plugin.pipelineName,
+		session:        session,
+		emitter:        emitter,
+		ctx:            plugin.ctx,
+		sourceHost:     cfg.Source.Host,
+		Slot:           cfg.Slot,
+		ReplicationSet: cfg.ReplicationSet,
+		positionStore:  plugin.positionStore.(position_store.PgsqlPositionStore),
+		pipelineName:   plugin.pipelineName,
 	}
 	tailer := NewpglogicalTailer(&tailerOpts)
+	if tailer == nil {
+		log.Errorf("Create pglogical trailer failed")
+		return errors.New("failed to created pglogical trailer")
+	}
+	log.Infof("Create pgsql rep connection ok")
 
 	plugin.pglogicalTailer = tailer
 	//plugin.oplogChecker = checker

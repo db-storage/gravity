@@ -69,7 +69,7 @@ type MongoPositionStore interface {
 type PgsqlPositionStore interface {
 	Start() error
 	Close()
-	Get() int64
+	Get() uint64
 	Put(position int64)
 }
 

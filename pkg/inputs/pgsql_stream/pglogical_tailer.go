@@ -177,10 +177,11 @@ func (tailer *PglogicalTailer) startReplication(slot string, repSet string, star
 	add = fmt.Sprintf(`, "binary.want_binary_basetypes" '%s'`, "1")
 	pluginArgs += add
 
-	err := tailer.session.StartReplication(slot, tailer.cfg.StartPosition, -1, pluginArgs)
+	err := tailer.session.StartReplication(slot, startLsn, -1, pluginArgs)
 	if err != nil {
 		log.Fatal("StartReplication Failed:", err)
 	}
+	log.Info(" [pgsql] StartReplication ok")
 	return err
 }
 
@@ -221,7 +222,7 @@ func (tailer *PglogicalTailer) getNextMsg() (*pgx.ReplicationMessage, error) {
 		} else if message.ServerHeartbeat != nil {
 			log.Println("Heartbeat requested")
 			// send Standby Status with the LSN position
-			err = tailer.sendStandbyStatus(startLsn)
+			err = tailer.sendStandbyStatus(tailer.positionStore.Get())
 			if err != nil {
 				log.Error("Unable to send standby status:", err)
 			}
@@ -348,7 +349,8 @@ type inputContext struct {
 func (tailer *PglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) error {
 	//The first byte is type, skipped here
 	walData := StringInfoData{repMsg.WalMessage.WalData, 1}
-	if msgver, err := walData.GetUInt8(); err != nil {
+	//msgver, unused now
+	if _, err := walData.GetUInt8(); err != nil {
 		log.Errorf("get msgver faild: %v", err)
 		return err
 	}
@@ -733,7 +735,9 @@ func NewDDLMsg(
 */
 
 type PglogicalTailerOpt struct {
-	pipelineName string
+	pipelineName   string
+	Slot           string
+	ReplicationSet string
 	//uniqueSourceName string
 	// mqMsgType        protocol.JobMsgType
 	session       *pgx.ReplicationConn
@@ -748,6 +752,7 @@ type PglogicalTailerOpt struct {
 func NewpglogicalTailer(opts *PglogicalTailerOpt) *PglogicalTailer {
 	if opts.pipelineName == "" {
 		log.Fatalf("[oplog_tailer] pipeline name is empty")
+		return nil
 	}
 
 	tailer := PglogicalTailer{
