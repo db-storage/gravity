@@ -2,19 +2,19 @@ package pgsql
 
 import (
 	_ "bytes"
-	"context"
+	_ "context"
 	_ "database/sql"
 	_ "database/sql/driver"
 	_ "encoding/binary"
-	"fmt"
+	_ "fmt"
 	"github.com/jackc/pgx"
 	_ "github.com/jackc/pgx/pgtype"
-	"github.com/moiot/gravity/pkg/config"
-	"github.com/moiot/gravity/pkg/logutil"
+	_ "github.com/moiot/gravity/pkg/config"
+	_ "github.com/moiot/gravity/pkg/logutil"
 	"github.com/moiot/gravity/pkg/utils"
-	"log"
-	"pg_test/gravity"
-	"time"
+	log "github.com/sirupsen/logrus"
+	_ "pg_test/gravity"
+	_ "time"
 )
 
 //We can start a replication connection manually
@@ -26,11 +26,11 @@ func NewRepConnection(cfg *utils.DBConfig) (*pgx.ReplicationConn, error) {
 	//ctx := context.Background()
 
 	config := pgx.ConnConfig{
-		Database: Schema,
+		Database: cfg.Schema,
 		User:     cfg.Username,
 		Password: cfg.Password,
 		Host:     cfg.Host,
-		Port:     cfg.Port,
+		Port:     (uint16)(cfg.Port),
 	}
 	config.RuntimeParams = make(map[string]string)
 	config.RuntimeParams["replication"] = "database"

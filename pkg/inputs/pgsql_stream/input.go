@@ -14,11 +14,12 @@ import (
 	"github.com/moiot/gravity/pkg/pgsql"
 	"github.com/moiot/gravity/pkg/position_store"
 	"github.com/moiot/gravity/pkg/registry"
+	"github.com/moiot/gravity/pkg/utils"
 )
 
 type PluginConfig struct {
-	Source        *config.PgsqlConnConfig `mapstructure:"source" toml:"source" json:"source"`
-	StartPosition *config.PgsqlPosition   `mapstructure:"start-position" toml:"start-position" json:"start-position"`
+	Source        *utils.DBConfig `mapstructure:"source" toml:"source" json:"source"`
+	StartPosition uint64          `mapstructure:"start-position" toml:"start-position" json:"start-position"`
 }
 
 type pgsqlStreamInputPlugin struct {
@@ -63,12 +64,16 @@ func (plugin *pgsqlStreamInputPlugin) Configure(pipelineName string, data map[st
 }
 
 func (plugin *pgsqlStreamInputPlugin) NewPositionStore() (position_store.PositionStore, error) {
-	positionStore, err := position_store.NewPgsqlPositionStore(plugin.pipelineName, plugin.cfg.Source, plugin.cfg.StartPosition)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	plugin.positionStore = positionStore
-	return positionStore, nil
+	//TODO: implement this later
+	/*
+		positionStore, err := position_store.NewPgsqlPositionStore(plugin.pipelineName, plugin.cfg.Source, plugin.cfg.StartPosition)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		plugin.positionStore = positionStore
+		return positionStore, nil
+	*/
+	return nil, nil
 }
 
 func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
@@ -77,7 +82,7 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 
 	session, err := pgsql.NewRepConnection(plugin.cfg.Source)
 	if err != nil {
-		log.Errof("Create pgsql rep connection ok")
+		log.Errorf("Create pgsql rep connection ok")
 		return errors.Trace(err)
 	}
 	log.Infof("Create pgsql rep connection ok")
@@ -85,13 +90,13 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 
 	cfg := plugin.cfg
 
-	tailerOpts := pglogicalTailerOpt{
-		session:        session,
-		emitter:        emitter,
-		ctx:            plugin.ctx,
-		sourceHost:     cfg.Source.Host,
-		positionpStore: plugin.positionStore.(position_store.MongoPositionStore),
-		pipelineName:   plugin.pipelineName,
+	tailerOpts := PglogicalTailerOpt{
+		session:       session,
+		emitter:       emitter,
+		ctx:           plugin.ctx,
+		sourceHost:    cfg.Source.Host,
+		positionStore: plugin.positionStore.(position_store.PgsqlPositionStore),
+		pipelineName:  plugin.pipelineName,
 	}
 	tailer := NewpglogicalTailer(&tailerOpts)
 
@@ -99,7 +104,7 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 	//plugin.oplogChecker = checker
 
 	plugin.wg.Add(1)
-	go func(t *OplogTailer) {
+	go func(t *PglogicalTailer) {
 		defer plugin.wg.Done()
 		t.Run()
 	}(tailer)
@@ -132,7 +137,7 @@ func (plugin *pgsqlStreamInputPlugin) Wait() {
 }
 
 func (plugin *pgsqlStreamInputPlugin) SendDeadSignal() error {
-	return pgRepSession.Close()
+	return plugin.pgRepSession.Close()
 }
 
 func (plugin *pgsqlStreamInputPlugin) Identity() uint32 {
@@ -145,6 +150,6 @@ func (plugin *pgsqlStreamInputPlugin) Close() {
 
 		log.Infof("[pgsqlStreamInputPlugin] wait others")
 		plugin.wg.Wait()
-		plugin.mongoSession.Close()
+		plugin.pgRepSession.Close()
 	})
 }

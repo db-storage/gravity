@@ -38,7 +38,7 @@ type OplogTailer struct {
 	stopped        bool
 }
 
-type upstreamConf struct {
+type isMasterResult struct {
 	IsMaster            bool   `json:"ismaster"`
 	Msg                 string `json:"msg"`
 	MaxBsonObjetSize    int    `json:"maxBsonObjectSize"`

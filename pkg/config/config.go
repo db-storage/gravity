@@ -52,6 +52,7 @@ type PipelineConfig struct {
 
 	MongoConfig      *MongoConfigs     `toml:"mongo" json:"mongo"`
 	MySQLConfig      *MySQLConfig      `toml:"mysql" json:"mysql"`
+	PgSQLConfig      *PgSQLConfig      `toml:"pgsql" json:"pgsql"`
 	SourceTiDBConfig *SourceTiDBConfig `toml:"source-tidb" json:"source-tidb"`
 	SourceProbeCfg   *SourceProbeCfg   `toml:"source-probe-config" json:"source-probe-config"`
 
@@ -105,6 +106,11 @@ type MongoConfigs struct {
 	MongoSources   []MongoSource    `toml:"mongo-sources" json:"mongo-sources"`
 	PositionSource *MongoConnConfig `toml:"position-conn" json:"position-conn"`
 	GtmConfig      *GtmConfig       `toml:"gtm-config" json:"gtm-config"`
+}
+
+type PgSQLConfig struct {
+	Source        *utils.DBConfig `mapstructure:"source" toml:"source" json:"source"`
+	StartPosition int64           `toml:"start-position" json:"start-position"`
 }
 
 type MySQLConfig struct {

@@ -66,6 +66,13 @@ type MongoPositionStore interface {
 	Put(position config.MongoPosition)
 }
 
+type PgsqlPositionStore interface {
+	Start() error
+	Close()
+	Get() int64
+	Put(position int64)
+}
+
 type MySQLTablePositionStore interface {
 	GetStartBinlogPos() (utils.MySQLBinlogPosition, bool)
 	PutStartBinlogPos(position utils.MySQLBinlogPosition)
