@@ -42,6 +42,8 @@ type pgsqlStreamInputPlugin struct {
 
 func init() {
 	registry.RegisterPlugin(registry.InputPlugin, "pgsql_stream", &pgsqlStreamInputPlugin{}, false)
+	log.Info("pgsql_stream plugin registered")
+
 }
 
 // TODO position store, gtm config, etc
@@ -54,7 +56,7 @@ func (plugin *pgsqlStreamInputPlugin) Configure(pipelineName string, data map[st
 	}
 
 	if cfg.Source == nil {
-		return errors.Errorf("no mongo source confgiured")
+		return errors.Errorf("no pgsql source confgiured")
 	}
 	plugin.cfg = &cfg
 	return nil
@@ -75,13 +77,15 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 
 	session, err := pgsql.NewRepConnection(plugin.cfg.Source)
 	if err != nil {
+		log.Errof("Create pgsql rep connection ok")
 		return errors.Trace(err)
 	}
+	log.Infof("Create pgsql rep connection ok")
 	plugin.pgRepSession = session
 
 	cfg := plugin.cfg
 
-	tailerOpts := OplogTailerOpt{
+	tailerOpts := pglogicalTailerOpt{
 		session:        session,
 		emitter:        emitter,
 		ctx:            plugin.ctx,
@@ -89,7 +93,7 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 		positionpStore: plugin.positionStore.(position_store.MongoPositionStore),
 		pipelineName:   plugin.pipelineName,
 	}
-	tailer := NewOplogTailer(&tailerOpts)
+	tailer := NewpglogicalTailer(&tailerOpts)
 
 	plugin.pglogicalTailer = tailer
 	//plugin.oplogChecker = checker

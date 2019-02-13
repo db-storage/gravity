@@ -2,6 +2,7 @@ package pgsql_stream
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -44,15 +45,98 @@ type filterOpt struct {
 	allowCommand bool
 }
 
-func GetRowDataFromOp(op *gtm.Op) *map[string]interface{} {
-	var row *map[string]interface{}
-	if op.IsInsert() {
-		row = &op.Data
-	} else if op.IsUpdate() {
-		row = &op.Row
-	}
+type StringInfoData struct {
+	msg []byte
+	//The next byte to read
+	cursor int
+}
 
-	return row
+func (strInfo *StringInfoData) HasMoreData() bool {
+	//The last byte is a '\0', not data
+	return cursor < len(msg)
+}
+
+func (strInfo *StringInfoData) GetUInt8() (uint8, error) {
+	if cur >= len(msg) {
+		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := uint8(msg[cursor])
+	cursor++
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetInt8() (int8, error) {
+	if cur >= len(msg) {
+		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := int8(msg[cursor])
+	cursor++
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetInt64() (int64, error) {
+	if cur+8 >= len(msg) {
+		return 0, fmt.Errorf("No int64 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := int64(binary.BigEndian.int64(msg[cursor : cursor+8]))
+	cursor += 8
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetUInt64() (uint64, error) {
+	if cur+8 >= len(msg) {
+		return 0, fmt.Errorf("No uint64 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := uint64(binary.BigEndian.uint64(msg[cursor : cursor+8]))
+	cursor += 8
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetInt32() (int32, error) {
+	if cur+4 >= len(msg) {
+		return 0, fmt.Errorf("No int32 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := int32(binary.BigEndian.int32(msg[cursor : cursor+4]))
+	cursor += 4
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetUInt32() (uint32, error) {
+	if cur+4 >= len(msg) {
+		return 0, fmt.Errorf("No uint32 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := uint32(binary.BigEndian.uint32(msg[cursor : cursor+4]))
+	cursor += 4
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetInt16() (int16, error) {
+	if cur+2 >= len(msg) {
+		return 0, fmt.Errorf("No int16 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := int16(binary.BigEndian.int16(msg[cursor : cursor+2]))
+	cursor += 2
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetUInt16() (uint16, error) {
+	if cur+2 >= len(msg) {
+		return 0, fmt.Errorf("No uint16 found, len:%d, cursor:%d", len(msg), cursor)
+	}
+	val := uint16(binary.BigEndian.uint16(msg[cursor : cursor+2]))
+	cursor += 2
+	return val, nil
+}
+
+func (strInfo *StringInfoData) GetString() (string, error) {
+	for i := cursor; i < len(msg); i++ {
+		if msg[i] == 0 {
+			s := msg[cursor:i]
+			cursor = i + 1
+			return s
+		}
+	}
+	return nil, fmt.Errorf("No String found, len:%d, cursor:%d", len(msg), cursor)
 }
 
 func (tailer *pglogicalTailer) Filter(op *gtm.Op, option *filterOpt) bool {
@@ -148,7 +232,7 @@ func (tailer *pglogicalTailer) getNextMsg() (*pgx.ReplicationMessage, error) {
 
 //refer to pglogical's replication_handler()
 func (tailer *pglogicalTailer) handleMsg(repMsg *pgx.ReplicationMessage) error {
-	msgType := repMsg[0]
+	msgType := repMsg.WalMessage.WalData[0]
 	switch msgType {
 	/* BEGIN */
 	case 'B':
@@ -258,229 +342,269 @@ type inputContext struct {
 	position utils.MySQLBinlogPosition
 }
 
+func (tailer *pglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) error {
+	//The first byte is type, skipped here
+	walData := StringInfoData{repMsg.WalMessage.WalData, 1}
+	if msgver, err := walData.GetUInt8(); err != nil {
+		log.Errorf("get msgver faild: %v", err)
+		return err
+	}
+	for {
+		if !walData.HasMoreData() {
+			break
+		}
+		if key, err := walData.GetString(); err != nil {
+			log.Errorf("get key faild: %v", err)
+			return err
+		}
+
+		if val, err := walData.GetString(); err != nil {
+			log.Errorf("get val for key:%v faild: %v, ", key, err)
+			return err
+		}
+		log.Println("Get param, key: %v, val: %v", key, val)
+		//TODO handle params later
+		//handleParam(key, val)
+	}
+}
+
 //TODO: should create a batch for all messages in a txn?
 func (tailer *pglogicalTailer) handleBegin(repMsg *pgx.ReplicationMessage) error {
-	d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
-	flags := d.uint8()
-	if flags != 0 {
-		log.Fatalf("Unkown flags:%c", flags)
-		return errors.New("Unkown flags:%c", flags)
-	}
-	remoteLsn := d.int64()
-	commitTime := d.int64()
-	log.Info("Get txn begin, remoteLsn:%v", remoteLsn)
-	inRemoteTxn = true
+	/*
+		d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
+		flags := d.uint8()
+		if flags != 0 {
+			log.Fatalf("Unkown flags:%c", flags)
+			return errors.New("Unkown flags:%c", flags)
+		}
+		remoteLsn := d.int64()
+		commitTime := d.int64()
+		log.Info("Get txn begin, remoteLsn:%v", remoteLsn)
+		inRemoteTxn = true
+	*/
 	return nil
 
 }
 
 func (tailer *pglogicalTailer) handleCommit(repMsg *pgx.ReplicationMessage) error {
-	if !inRemoteTxn {
-		log.Fatalf("Get commit with no begin")
-		return errors.New("Get commit with no begin")
-	}
-	d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
-	flags := d.uint8()
-	if flags != 0 {
-		log.Fatalf("Unkown flags:%c", flags)
-		return errors.New("Unkown flags:%c", flags)
-	}
-	commitLsn := d.int64()
-	endLsn := d.int64()
-	commitTime := d.int64()
-	log.Info("Get txn Commit, commitLsn:%v, endLsn:%v", commitLsn, endLsn)
-	inRemoteTxn = false
+	/*
+		if !inRemoteTxn {
+			log.Fatalf("Get commit with no begin")
+			return errors.New("Get commit with no begin")
+		}
+		d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
+		flags := d.uint8()
+		if flags != 0 {
+			log.Fatalf("Unkown flags:%c", flags)
+			return errors.New("Unkown flags:%c", flags)
+		}
+		commitLsn := d.int64()
+		endLsn := d.int64()
+		commitTime := d.int64()
+		log.Info("Get txn Commit, commitLsn:%v, endLsn:%v", commitLsn, endLsn)
+		inRemoteTxn = false
+	*/
 	return nil
 
 }
 func (tailer *pglogicalTailer) handleOrigin(repMsg *pgx.ReplicationMessage) error {
-	if !inRemoteTxn {
-		log.Fatalf("Get commit with no begin")
-		return errors.New("Get commit with no begin")
-	}
-	d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
-}
-
-func (tailer *pglogicalTailer) handleInsert(repMsg *pgx.ReplicationMessage) {
-	msgs := make([]*core.Msg, len(ev.Rows))
-	columns := tableDef.Columns
-	pkColumns := tableDef.PrimaryKeyColumns
-
-	pkColumnNames := make([]string, len(pkColumns))
-	for i, c := range pkColumns {
-		pkColumnNames[i] = c.Name
-	}
-
-	for rowIndex, dataRow := range ev.Rows {
-
-		if len(dataRow) != len(columns) {
-			log.Warnf("insert %s.%s columns and data mismatch in length: %d vs %d, table %v",
-				ev.Table.Schema, ev.Table.Table, len(columns), len(dataRow), tableDef)
+	/*
+		if !inRemoteTxn {
+			log.Fatalf("Get commit with no begin")
+			return errors.New("Get commit with no begin")
 		}
-		msg := core.Msg{
-			Type:         core.MsgDML,
-			Host:         host,
-			Database:     database,
-			Table:        table,
-			Timestamp:    time.Unix(ts, 0),
-			InputContext: inputContext{op: insert},
-			Metrics: core.Metrics{
-				MsgCreateTime: time.Now(),
-			},
-		}
-
-		dmlMsg := &core.DMLMsg{}
-		dmlMsg.Operation = core.Insert
-
-		data := make(map[string]interface{})
-		for i := 0; i < len(dataRow); i++ {
-			data[columns[i].Name] = deserialize(dataRow[i], columns[i])
-		}
-		dmlMsg.Data = data
-		pks, err := mysql.GenPrimaryKeys(pkColumns, data)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		dmlMsg.Pks = pks
-		msg.DmlMsg = dmlMsg
-		msg.Done = make(chan struct{})
-		msg.InputStreamKey = utils.NewStringPtr(inputStreamKey)
-		msg.OutputStreamKey = utils.NewStringPtr(msg.GetPkSign())
-		msgs[rowIndex] = &msg
-	}
-	err = tailer.emitter.Emit(msg)
-	if err != nil {
-		log.Fatalf("failed to emit, idx: %d, schema: %v, table: %v, msgType: %v, err: %v",
-			i, m.Database, m.Table, m.Type, errors.ErrorStack(err))
-	}
+		d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
+	*/
 	return nil
 }
 
-func (tailer *pglogicalTailer) handleUpdate() {
-	//	tableDef (*schema_store.Table) ([]*core.Msg, error) {
+//refer to NewInsertMsgs of mysql binlog trailer
+func (tailer *pglogicalTailer) handleInsert(repMsg *pgx.ReplicationMessage) error {
+	/*
+		msgs := make([]*core.Msg, len(ev.Rows))
+		columns := tableDef.Columns
+		pkColumns := tableDef.PrimaryKeyColumns
 
-	var msgs []*core.Msg
-	columns := tableDef.Columns
-	pkColumns := tableDef.PrimaryKeyColumns
-	pkColumnNames := make([]string, len(pkColumns))
-	for i, c := range pkColumns {
-		pkColumnNames[i] = c.Name
-	}
-	for rowIndex := 0; rowIndex < len(ev.Rows); rowIndex += 2 {
-		oldDataRow := ev.Rows[rowIndex]
-		newDataRow := ev.Rows[rowIndex+1]
-
-		if len(oldDataRow) != len(newDataRow) {
-			return nil, errors.Errorf("update %s.%s data mismatch in length: %d vs %d",
-				tableDef.Schema, tableDef.Name, len(oldDataRow), len(newDataRow))
+		pkColumnNames := make([]string, len(pkColumns))
+		for i, c := range pkColumns {
+			pkColumnNames[i] = c.Name
 		}
 
-		if len(oldDataRow) != len(columns) {
-			log.Warnf("update %s.%s columns and data mismatch in column length: %d vs, old data length: %d",
-				tableDef.Schema, tableDef.Name, len(columns), len(oldDataRow))
-		}
+		for rowIndex, dataRow := range ev.Rows {
 
-		data := make(map[string]interface{})
-		old := make(map[string]interface{})
-		pkUpdate := false
-		for i := 0; i < len(oldDataRow); i++ {
-			data[columns[i].Name] = deserialize(newDataRow[i], columns[i])
-			old[columns[i].Name] = deserialize(oldDataRow[i], columns[i])
-
-			if columns[i].IsPrimaryKey && data[columns[i].Name] != old[columns[i].Name] {
-				pkUpdate = true
+			if len(dataRow) != len(columns) {
+				log.Warnf("insert %s.%s columns and data mismatch in length: %d vs %d, table %v",
+					ev.Table.Schema, ev.Table.Table, len(columns), len(dataRow), tableDef)
 			}
-		}
-
-		if !pkUpdate {
 			msg := core.Msg{
 				Type:         core.MsgDML,
 				Host:         host,
 				Database:     database,
 				Table:        table,
 				Timestamp:    time.Unix(ts, 0),
-				InputContext: inputContext{op: update},
+				InputContext: inputContext{op: insert},
 				Metrics: core.Metrics{
 					MsgCreateTime: time.Now(),
 				},
 			}
 
 			dmlMsg := &core.DMLMsg{}
-			dmlMsg.Operation = core.Update
+			dmlMsg.Operation = core.Insert
+
+			data := make(map[string]interface{})
+			for i := 0; i < len(dataRow); i++ {
+				data[columns[i].Name] = deserialize(dataRow[i], columns[i])
+			}
+			dmlMsg.Data = data
 			pks, err := mysql.GenPrimaryKeys(pkColumns, data)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
 			dmlMsg.Pks = pks
-
-			dmlMsg.Data = data
-			dmlMsg.Old = old
-
 			msg.DmlMsg = dmlMsg
 			msg.Done = make(chan struct{})
 			msg.InputStreamKey = utils.NewStringPtr(inputStreamKey)
 			msg.OutputStreamKey = utils.NewStringPtr(msg.GetPkSign())
-			msgs = append(msgs, &msg)
-		} else {
-			// first delete old row
-			msgDelete := core.Msg{
-				Type:         core.MsgDML,
-				Host:         host,
-				Database:     database,
-				Table:        table,
-				Timestamp:    time.Unix(ts, 0),
-				InputContext: inputContext{op: updatePrimaryKey},
-				Metrics: core.Metrics{
-					MsgCreateTime: time.Now(),
-				},
-			}
-			dmlMsg1 := &core.DMLMsg{}
-			dmlMsg1.Operation = core.Delete
-
-			pks, err := mysql.GenPrimaryKeys(pkColumns, old)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			dmlMsg1.Pks = pks
-			dmlMsg1.Data = old
-			msgDelete.DmlMsg = dmlMsg1
-			msgDelete.Done = make(chan struct{})
-			msgDelete.InputStreamKey = utils.NewStringPtr(inputStreamKey)
-			msgDelete.OutputStreamKey = utils.NewStringPtr(msgDelete.GetPkSign())
-			msgs = append(msgs, &msgDelete)
-
-			// then insert new row
-			msgInsert := core.Msg{
-				Type:         core.MsgDML,
-				Host:         host,
-				Database:     database,
-				Table:        table,
-				Timestamp:    time.Unix(ts, 0),
-				InputContext: inputContext{op: updatePrimaryKey},
-				Metrics: core.Metrics{
-					MsgCreateTime: time.Now(),
-				},
-			}
-			dmlMsg2 := &core.DMLMsg{}
-			dmlMsg2.Operation = core.Insert
-
-			pks, err = mysql.GenPrimaryKeys(pkColumns, data)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			dmlMsg2.Pks = pks
-
-			dmlMsg2.Data = data
-			msgInsert.DmlMsg = dmlMsg2
-			msgInsert.Done = make(chan struct{})
-			msgInsert.InputStreamKey = utils.NewStringPtr(inputStreamKey)
-			msgInsert.OutputStreamKey = utils.NewStringPtr(msgInsert.GetPkSign())
-			msgs = append(msgs, &msgInsert)
+			msgs[rowIndex] = &msg
 		}
-	}
-	return msgs, nil
+		err = tailer.emitter.Emit(msg)
+		if err != nil {
+			log.Fatalf("failed to emit, idx: %d, schema: %v, table: %v, msgType: %v, err: %v",
+				i, m.Database, m.Table, m.Type, errors.ErrorStack(err))
+		}
+	*/
+	return nil
 }
 
+func (tailer *pglogicalTailer) handleUpdate() error {
+	/*
+		//	tableDef (*schema_store.Table) ([]*core.Msg, error) {
+
+		var msgs []*core.Msg
+		columns := tableDef.Columns
+		pkColumns := tableDef.PrimaryKeyColumns
+		pkColumnNames := make([]string, len(pkColumns))
+		for i, c := range pkColumns {
+			pkColumnNames[i] = c.Name
+		}
+		for rowIndex := 0; rowIndex < len(ev.Rows); rowIndex += 2 {
+			oldDataRow := ev.Rows[rowIndex]
+			newDataRow := ev.Rows[rowIndex+1]
+
+			if len(oldDataRow) != len(newDataRow) {
+				return nil, errors.Errorf("update %s.%s data mismatch in length: %d vs %d",
+					tableDef.Schema, tableDef.Name, len(oldDataRow), len(newDataRow))
+			}
+
+			if len(oldDataRow) != len(columns) {
+				log.Warnf("update %s.%s columns and data mismatch in column length: %d vs, old data length: %d",
+					tableDef.Schema, tableDef.Name, len(columns), len(oldDataRow))
+			}
+
+			data := make(map[string]interface{})
+			old := make(map[string]interface{})
+			pkUpdate := false
+			for i := 0; i < len(oldDataRow); i++ {
+				data[columns[i].Name] = deserialize(newDataRow[i], columns[i])
+				old[columns[i].Name] = deserialize(oldDataRow[i], columns[i])
+
+				if columns[i].IsPrimaryKey && data[columns[i].Name] != old[columns[i].Name] {
+					pkUpdate = true
+				}
+			}
+
+			if !pkUpdate {
+				msg := core.Msg{
+					Type:         core.MsgDML,
+					Host:         host,
+					Database:     database,
+					Table:        table,
+					Timestamp:    time.Unix(ts, 0),
+					InputContext: inputContext{op: update},
+					Metrics: core.Metrics{
+						MsgCreateTime: time.Now(),
+					},
+				}
+
+				dmlMsg := &core.DMLMsg{}
+				dmlMsg.Operation = core.Update
+				pks, err := mysql.GenPrimaryKeys(pkColumns, data)
+				if err != nil {
+					return nil, errors.Trace(err)
+				}
+				dmlMsg.Pks = pks
+
+				dmlMsg.Data = data
+				dmlMsg.Old = old
+
+				msg.DmlMsg = dmlMsg
+				msg.Done = make(chan struct{})
+				msg.InputStreamKey = utils.NewStringPtr(inputStreamKey)
+				msg.OutputStreamKey = utils.NewStringPtr(msg.GetPkSign())
+				msgs = append(msgs, &msg)
+			} else {
+				// first delete old row
+				msgDelete := core.Msg{
+					Type:         core.MsgDML,
+					Host:         host,
+					Database:     database,
+					Table:        table,
+					Timestamp:    time.Unix(ts, 0),
+					InputContext: inputContext{op: updatePrimaryKey},
+					Metrics: core.Metrics{
+						MsgCreateTime: time.Now(),
+					},
+				}
+				dmlMsg1 := &core.DMLMsg{}
+				dmlMsg1.Operation = core.Delete
+
+				pks, err := mysql.GenPrimaryKeys(pkColumns, old)
+				if err != nil {
+					return nil, errors.Trace(err)
+				}
+				dmlMsg1.Pks = pks
+				dmlMsg1.Data = old
+				msgDelete.DmlMsg = dmlMsg1
+				msgDelete.Done = make(chan struct{})
+				msgDelete.InputStreamKey = utils.NewStringPtr(inputStreamKey)
+				msgDelete.OutputStreamKey = utils.NewStringPtr(msgDelete.GetPkSign())
+				msgs = append(msgs, &msgDelete)
+
+				// then insert new row
+				msgInsert := core.Msg{
+					Type:         core.MsgDML,
+					Host:         host,
+					Database:     database,
+					Table:        table,
+					Timestamp:    time.Unix(ts, 0),
+					InputContext: inputContext{op: updatePrimaryKey},
+					Metrics: core.Metrics{
+						MsgCreateTime: time.Now(),
+					},
+				}
+				dmlMsg2 := &core.DMLMsg{}
+				dmlMsg2.Operation = core.Insert
+
+				pks, err = mysql.GenPrimaryKeys(pkColumns, data)
+				if err != nil {
+					return nil, errors.Trace(err)
+				}
+				dmlMsg2.Pks = pks
+
+				dmlMsg2.Data = data
+				msgInsert.DmlMsg = dmlMsg2
+				msgInsert.Done = make(chan struct{})
+				msgInsert.InputStreamKey = utils.NewStringPtr(inputStreamKey)
+				msgInsert.OutputStreamKey = utils.NewStringPtr(msgInsert.GetPkSign())
+				msgs = append(msgs, &msgInsert)
+			}
+		}
+		return msgs, nil
+	*/
+	return nil, nil
+}
+
+/*
 func deserialize(raw interface{}, column schema_store.Column) interface{} {
 	// fix issue: https://github.com/siddontang/go-mysql/issues/242
 	if raw == nil {
@@ -593,6 +717,7 @@ func NewDDLMsg(
 		},
 	}
 }
+*/
 
 type pglogicalTailerOpt struct {
 	pipelineName     string
