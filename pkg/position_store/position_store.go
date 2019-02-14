@@ -69,8 +69,9 @@ type MongoPositionStore interface {
 type PgsqlPositionStore interface {
 	Start() error
 	Close()
-	Get() uint64
-	Put(position int64)
+	Get() utils.PgSQLPosition
+	Put(position utils.PgSQLPosition)
+	FSync()
 }
 
 type MySQLTablePositionStore interface {

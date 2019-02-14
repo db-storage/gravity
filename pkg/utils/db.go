@@ -583,6 +583,10 @@ type MySQLBinlogPosition struct {
 	BinlogGTID     string `toml:"binlog-gtid" json:"binlog-gtid" mapstructure:"binlog-gtid"`
 }
 
+type PgSQLPosition struct {
+	WalPosition uint64 `toml:"wal-position" json:"wal-position" mapstructure:"wal-position"`
+}
+
 func TableIdentity(schemaName string, tableName string) string {
 	return fmt.Sprintf("`%s`.`%s`", schemaName, tableName)
 }

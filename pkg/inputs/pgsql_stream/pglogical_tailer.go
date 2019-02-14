@@ -21,17 +21,17 @@ import (
 )
 
 type PglogicalTailer struct {
-	pipelineName  string
-	slot          string
-	repSet        string
-	emitter       core.Emitter
-	ctx           context.Context
-	cancel        context.CancelFunc
-	idx           int
-	session       *pgx.ReplicationConn
-	sourceHost    string
-	positionStore position_store.PgsqlPositionStore
-	stopped       bool
+	pipelineName   string
+	slot           string
+	replicationSet string
+	emitter        core.Emitter
+	ctx            context.Context
+	cancel         context.CancelFunc
+	idx            int
+	session        *pgx.ReplicationConn
+	sourceHost     string
+	positionStore  position_store.PgsqlPositionStore
+	stopped        bool
 	//After a Begin, before a Commit
 	inRemoteTxn       bool
 	sourceSchemaStore schema_store.SchemaStore
@@ -179,9 +179,9 @@ func (tailer *PglogicalTailer) startReplication(slot string, repSet string, star
 
 	err := tailer.session.StartReplication(slot, startLsn, -1, pluginArgs)
 	if err != nil {
-		log.Fatal("StartReplication Failed:", err)
+		log.Fatalf("StartReplication Failed, slot:%v, startLsn:%v, err:%v", slot, startLsn, err)
 	}
-	log.Info(" [pgsql] StartReplication ok")
+	log.Infof(" [pgsql] StartReplication OK, slot:%v, repSet:%v, startLsn:%v", slot, repSet, startLsn)
 	return err
 }
 
@@ -204,7 +204,7 @@ func (tailer *PglogicalTailer) getNextMsg() (*pgx.ReplicationMessage, error) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), 500*time.Second) //, 5*time.Second)
 	defer cancelFn()
 	for {
-		log.Info("Waiting for message")
+		//log.Info("Waiting for message")
 		var message *pgx.ReplicationMessage
 
 		message, err := tailer.session.WaitForReplicationMessage(ctx)
@@ -214,21 +214,21 @@ func (tailer *PglogicalTailer) getNextMsg() (*pgx.ReplicationMessage, error) {
 		}
 
 		if message.WalMessage != nil {
-			walStart := message.WalMessage.WalStart
+			//walStart := message.WalMessage.WalStart
 			//var logmsg gravity.Message
-			walString := string(message.WalMessage.WalData)
-			log.Info("Get Msg, size:", len(message.WalMessage.WalData), ", lsn:", walStart, walString)
+			//walString := string(message.WalMessage.WalData)
+			//log.Info("Get Msg, size:", len(message.WalMessage.WalData), ", lsn:", walStart, walString)
 			return message, nil
 		} else if message.ServerHeartbeat != nil {
-			log.Println("Heartbeat requested")
+			//log.Println("Heartbeat requested")
 			// send Standby Status with the LSN position
-			err = tailer.sendStandbyStatus(tailer.positionStore.Get())
+			err = tailer.sendStandbyStatus(tailer.positionStore.Get().WalPosition)
 			if err != nil {
 				log.Error("Unable to send standby status:", err)
 			}
 
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -272,14 +272,14 @@ func (tailer *PglogicalTailer) handleMsg(repMsg *pgx.ReplicationMessage) error {
 func (tailer *PglogicalTailer) Run() {
 	log.Infof("running tailer worker idx: %v", tailer.idx)
 
-	startLsn := tailer.positionStore.Get()
+	startLsn := tailer.positionStore.Get().WalPosition
 	if 0 == startLsn {
 		log.Infof("[oplog_tailer] start from the latest timestamp")
 	} else {
 		log.Infof("[oplog_tailer] start from the configured timestamp")
 	}
 	//TODO: which startLsn to use? log? position_store?
-	err := tailer.startReplication(tailer.slot, tailer.repSet, startLsn)
+	err := tailer.startReplication(tailer.slot, tailer.replicationSet, startLsn)
 	if err != nil {
 		log.Infof("running tailer worker idx: %v", tailer.idx)
 		return
@@ -347,6 +347,7 @@ type inputContext struct {
 }
 
 func (tailer *PglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Startup msg")
 	//The first byte is type, skipped here
 	walData := StringInfoData{repMsg.WalMessage.WalData, 1}
 	//msgver, unused now
@@ -378,6 +379,7 @@ func (tailer *PglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) err
 
 //TODO: should create a batch for all messages in a txn?
 func (tailer *PglogicalTailer) handleBegin(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Begin msg")
 	/*
 		d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
 		flags := d.uint8()
@@ -395,6 +397,7 @@ func (tailer *PglogicalTailer) handleBegin(repMsg *pgx.ReplicationMessage) error
 }
 
 func (tailer *PglogicalTailer) handleCommit(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Commit msg")
 	/*
 		if !inRemoteTxn {
 			log.Fatalf("Get commit with no begin")
@@ -416,6 +419,7 @@ func (tailer *PglogicalTailer) handleCommit(repMsg *pgx.ReplicationMessage) erro
 
 }
 func (tailer *PglogicalTailer) handleOrigin(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Origin msg")
 	/*
 		if !inRemoteTxn {
 			log.Fatalf("Get commit with no begin")
@@ -427,11 +431,13 @@ func (tailer *PglogicalTailer) handleOrigin(repMsg *pgx.ReplicationMessage) erro
 }
 
 func (tailer *PglogicalTailer) handleRelation(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Relation msg")
 	return nil
 }
 
 //refer to NewInsertMsgs of mysql binlog trailer
 func (tailer *PglogicalTailer) handleInsert(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Insert msg")
 	/*
 		msgs := make([]*core.Msg, len(ev.Rows))
 		columns := tableDef.Columns
@@ -489,9 +495,11 @@ func (tailer *PglogicalTailer) handleInsert(repMsg *pgx.ReplicationMessage) erro
 }
 
 func (tailer *PglogicalTailer) handleDelete(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Delete msg")
 	return nil
 }
 func (tailer *PglogicalTailer) handleUpdate(repMsg *pgx.ReplicationMessage) error {
+	log.Info("[pgsql] get Update msg")
 	/*
 		//	tableDef (*schema_store.Table) ([]*core.Msg, error) {
 
@@ -736,8 +744,8 @@ func NewDDLMsg(
 
 type PglogicalTailerOpt struct {
 	pipelineName   string
-	Slot           string
-	ReplicationSet string
+	slot           string
+	replicationSet string
 	//uniqueSourceName string
 	// mqMsgType        protocol.JobMsgType
 	session       *pgx.ReplicationConn
@@ -761,9 +769,12 @@ func NewpglogicalTailer(opts *PglogicalTailerOpt) *PglogicalTailer {
 		session: opts.session,
 		//oplogChecker:   opts.oplogChecker,
 		//gtmConfig:      opts.gtmConfig,
-		emitter:    opts.emitter,
-		idx:        opts.idx,
-		sourceHost: opts.sourceHost,
+		emitter:        opts.emitter,
+		idx:            opts.idx,
+		sourceHost:     opts.sourceHost,
+		positionStore:  opts.positionStore,
+		slot:           opts.slot,
+		replicationSet: opts.replicationSet,
 		//timestampStore: opts.timestampStore,
 	}
 	tailer.ctx, tailer.cancel = context.WithCancel(opts.ctx)

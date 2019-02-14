@@ -69,15 +69,12 @@ func (plugin *pgsqlStreamInputPlugin) Configure(pipelineName string, data map[st
 }
 
 func (plugin *pgsqlStreamInputPlugin) NewPositionStore() (position_store.PositionStore, error) {
-	//TODO: implement this later
-	/*
-		positionStore, err := position_store.NewPgsqlPositionStore(plugin.pipelineName, plugin.cfg.Source, plugin.cfg.StartPosition)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		plugin.positionStore = positionStore
-		return positionStore, nil
-	*/
+	positionStore, err := position_store.NewPgsqlPositionStore(plugin.pipelineName, plugin.cfg.Source, plugin.cfg.StartPosition)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	plugin.positionStore = positionStore
+	return positionStore, nil
 	return nil, nil
 }
 
@@ -101,8 +98,8 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 		emitter:        emitter,
 		ctx:            plugin.ctx,
 		sourceHost:     cfg.Source.Host,
-		Slot:           cfg.Slot,
-		ReplicationSet: cfg.ReplicationSet,
+		slot:           cfg.Slot,
+		replicationSet: cfg.ReplicationSet,
 		positionStore:  plugin.positionStore.(position_store.PgsqlPositionStore),
 		pipelineName:   plugin.pipelineName,
 	}
