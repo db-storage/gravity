@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/moiot/gravity/pkg/utils"
 
 	_ "github.com/json-iterator/go"
@@ -24,6 +25,7 @@ type PglogicalTailer struct {
 	pipelineName   string
 	slot           string
 	replicationSet string
+	startPosition  uint64
 	emitter        core.Emitter
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -51,12 +53,11 @@ type StringInfoData struct {
 }
 
 func (s *StringInfoData) HasMoreData() bool {
-	//The last byte is a '\0', not data
 	return s.cursor < len(s.msg)
 }
 
 func (s *StringInfoData) GetUInt8() (uint8, error) {
-	if s.cursor >= len(s.msg) {
+	if s.cursor+1 > len(s.msg) {
 		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := uint8(s.msg[s.cursor])
@@ -65,7 +66,7 @@ func (s *StringInfoData) GetUInt8() (uint8, error) {
 }
 
 func (s *StringInfoData) GetInt8() (int8, error) {
-	if s.cursor >= len(s.msg) {
+	if s.cursor+1 > len(s.msg) {
 		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := int8(s.msg[s.cursor])
@@ -74,7 +75,7 @@ func (s *StringInfoData) GetInt8() (int8, error) {
 }
 
 func (s *StringInfoData) GetInt64() (int64, error) {
-	if s.cursor+8 >= len(s.msg) {
+	if s.cursor+8 > len(s.msg) {
 		return 0, fmt.Errorf("No int64 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := int64(binary.BigEndian.Uint64(s.msg[s.cursor : s.cursor+8]))
@@ -83,7 +84,7 @@ func (s *StringInfoData) GetInt64() (int64, error) {
 }
 
 func (s *StringInfoData) GetUInt64() (uint64, error) {
-	if s.cursor+8 >= len(s.msg) {
+	if s.cursor+8 > len(s.msg) {
 		return 0, fmt.Errorf("No uint64 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := binary.BigEndian.Uint64(s.msg[s.cursor : s.cursor+8])
@@ -92,7 +93,7 @@ func (s *StringInfoData) GetUInt64() (uint64, error) {
 }
 
 func (s *StringInfoData) GetInt32() (int32, error) {
-	if s.cursor+2 >= len(s.msg) {
+	if s.cursor+2 > len(s.msg) {
 		return 0, fmt.Errorf("No int32 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := int32(binary.BigEndian.Uint32(s.msg[s.cursor : s.cursor+4]))
@@ -101,7 +102,7 @@ func (s *StringInfoData) GetInt32() (int32, error) {
 }
 
 func (s *StringInfoData) GetUInt32() (uint32, error) {
-	if s.cursor+4 >= len(s.msg) {
+	if s.cursor+4 > len(s.msg) {
 		return 0, fmt.Errorf("No uint32 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := binary.BigEndian.Uint32(s.msg[s.cursor : s.cursor+4])
@@ -110,7 +111,7 @@ func (s *StringInfoData) GetUInt32() (uint32, error) {
 }
 
 func (s *StringInfoData) GetInt16() (int16, error) {
-	if s.cursor+2 >= len(s.msg) {
+	if s.cursor+2 > len(s.msg) {
 		return 0, fmt.Errorf("No int16 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := int16(binary.BigEndian.Uint16(s.msg[s.cursor : s.cursor+2]))
@@ -119,7 +120,7 @@ func (s *StringInfoData) GetInt16() (int16, error) {
 }
 
 func (s *StringInfoData) GetUInt16() (uint16, error) {
-	if s.cursor+2 >= len(s.msg) {
+	if s.cursor+2 > len(s.msg) {
 		return 0, fmt.Errorf("No uint16 found, len:%d, cursor:%d", len(s.msg), s.cursor)
 	}
 	val := binary.BigEndian.Uint16(s.msg[s.cursor : s.cursor+2])
@@ -228,7 +229,7 @@ func (tailer *PglogicalTailer) getNextMsg() (*pgx.ReplicationMessage, error) {
 			}
 
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -272,7 +273,7 @@ func (tailer *PglogicalTailer) handleMsg(repMsg *pgx.ReplicationMessage) error {
 func (tailer *PglogicalTailer) Run() {
 	log.Infof("running tailer worker idx: %v", tailer.idx)
 
-	startLsn := tailer.positionStore.Get().WalPosition
+	startLsn := tailer.startPosition
 	if 0 == startLsn {
 		log.Infof("[oplog_tailer] start from the latest timestamp")
 	} else {
@@ -380,18 +381,35 @@ func (tailer *PglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) err
 //TODO: should create a batch for all messages in a txn?
 func (tailer *PglogicalTailer) handleBegin(repMsg *pgx.ReplicationMessage) error {
 	log.Info("[pgsql] get Begin msg")
-	/*
-		d := &pgsql.decoder{order: binary.BigEndian, buf: bytes.NewBuffer(repMsg[1:])}
-		flags := d.uint8()
-		if flags != 0 {
-			log.Fatalf("Unkown flags:%c", flags)
-			return errors.New("Unkown flags:%c", flags)
-		}
-		remoteLsn := d.int64()
-		commitTime := d.int64()
-		log.Info("Get txn begin, remoteLsn:%v", remoteLsn)
-		inRemoteTxn = true
-	*/
+	walData := StringInfoData{repMsg.WalMessage.WalData, 1}
+	flags, err := walData.GetUInt8()
+	if err != nil {
+		log.Errorf("[pgsql] get flags faild: %v", err)
+		return err
+	}
+	if flags != 0 {
+		return errors.Errorf("[pgsql] Unkown flags: %v", flags)
+	}
+
+	remoteLsn, err := walData.GetInt64()
+	if err != nil {
+		log.Errorf("[pgsql] get remote lsn faild: %v", err)
+		return err
+	}
+
+	commitTime, err := walData.GetInt64()
+	if err != nil {
+		log.Errorf("[pgsql] get commit time faild: %v", err)
+		return err
+	}
+
+	remoteXid, err := walData.GetInt32()
+	if err != nil {
+		log.Errorf("[pgsql] get remote xid faild: %v", err)
+		return err
+	}
+	log.Infof("remoteLsn: %v, commitTime: %v, remoteXid: %v", remoteLsn, commitTime, remoteXid)
+	s.inRemoteTxn = true
 	return nil
 
 }
@@ -415,6 +433,7 @@ func (tailer *PglogicalTailer) handleCommit(repMsg *pgx.ReplicationMessage) erro
 		log.Info("Get txn Commit, commitLsn:%v, endLsn:%v", commitLsn, endLsn)
 		inRemoteTxn = false
 	*/
+	s.inRemoteTxn = false
 	return nil
 
 }
@@ -746,6 +765,7 @@ type PglogicalTailerOpt struct {
 	pipelineName   string
 	slot           string
 	replicationSet string
+	startPosition  uint64
 	//uniqueSourceName string
 	// mqMsgType        protocol.JobMsgType
 	session       *pgx.ReplicationConn
@@ -775,6 +795,7 @@ func NewpglogicalTailer(opts *PglogicalTailerOpt) *PglogicalTailer {
 		positionStore:  opts.positionStore,
 		slot:           opts.slot,
 		replicationSet: opts.replicationSet,
+		startPosition:  opts.startPosition,
 		//timestampStore: opts.timestampStore,
 	}
 	tailer.ctx, tailer.cancel = context.WithCancel(opts.ctx)

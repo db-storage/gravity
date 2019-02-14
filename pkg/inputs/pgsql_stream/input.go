@@ -100,6 +100,7 @@ func (plugin *pgsqlStreamInputPlugin) Start(emitter core.Emitter) error {
 		sourceHost:     cfg.Source.Host,
 		slot:           cfg.Slot,
 		replicationSet: cfg.ReplicationSet,
+		startPosition:  cfg.StartPosition,
 		positionStore:  plugin.positionStore.(position_store.PgsqlPositionStore),
 		pipelineName:   plugin.pipelineName,
 	}
