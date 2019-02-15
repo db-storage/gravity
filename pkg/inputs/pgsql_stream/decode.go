@@ -24,7 +24,7 @@ func (s *StringInfoData) HasMoreData() bool {
 
 func (s *StringInfoData) checkRemain(count int) error {
 	if s.cursor+count > len(s.msg) {
-		return errors.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
+		return errors.Errorf("[pgsql] not enough data, len: %d, cursor: %d, count: %d", len(s.msg), s.cursor, count)
 	}
 	return nil
 }

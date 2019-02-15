@@ -278,10 +278,11 @@ func (tailer *PglogicalTailer) handleStartup(repMsg *pgx.ReplicationMessage) err
 			log.Errorf("get val for key:%v faild: %v, ", key, err)
 			return err
 		}
-		log.Println("Get param, key: %v, val: %v", key, val)
+		log.Infof("Get param, key: %v, val: %v", key, val)
 		//TODO handle params later
 		//handleParam(key, val)
 	}
+	tailer.relations = make(map[string]*Relation)
 	return nil
 }
 

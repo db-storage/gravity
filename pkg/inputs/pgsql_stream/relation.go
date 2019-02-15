@@ -27,6 +27,7 @@ type Attr struct {
 type Relation struct {
 	//schema string `json:"db_name"`
 	name string `json:"table_name"`
+	id   int32  `json:"table_id"`
 
 	attrs   []Attr `json:"attrs"`
 	attrMap map[int]*Attr
@@ -77,7 +78,7 @@ func (rm *Relations) UpdateRelation(rel *Relation) {
 	(*rm)[rel.name] = rel
 }
 
-func ReadAttrs(walData *StringInfoData, rel *Relation) error {
+func readAttrs(walData *StringInfoData, rel *Relation) error {
 	blockType, err := walData.GetUInt8()
 	if err != nil {
 		return err
@@ -86,12 +87,13 @@ func ReadAttrs(walData *StringInfoData, rel *Relation) error {
 		return errors.Errorf("[pgsql] unkown blockType: %v", blockType)
 	}
 
-	numAttrs, err := walData.GetInt32()
+	numAttrs, err := walData.GetInt16()
 	if err != nil {
 		return err
 	}
-	var i int32
-	for i = 1; i < numAttrs; i++ {
+	log.Infof("numAttrs: %v", numAttrs)
+
+	for i := 0; i < int(numAttrs); i++ {
 		blockType, err = walData.GetUInt8()
 		if err != nil {
 			return err
@@ -116,7 +118,7 @@ func ReadAttrs(walData *StringInfoData, rel *Relation) error {
 			return errors.Errorf("[pgsql] Unkown blockType: %v, expected: C", blockType)
 		}
 
-		nameLen, err := walData.GetInt32()
+		nameLen, err := walData.GetInt16()
 		if err != nil {
 			return err
 		}
@@ -125,10 +127,10 @@ func ReadAttrs(walData *StringInfoData, rel *Relation) error {
 		if err != nil {
 			return err
 		}
+		log.Infof("id: %v, name: %v", i, string(name))
 
-		attr := Attr{Idx: (int)(i), Name: string(name)}
+		attr := Attr{Idx: int(i), Name: string(name)}
 		rel.AddAttr(attr)
-		log.Infof("[pgsql] get rel: %v", rel)
 	}
 	return nil
 }
@@ -138,30 +140,56 @@ func RelationFromMsg(repMsg *pgx.ReplicationMessage) (*Relation, error) {
 
 	var flags uint8
 	if _, err := walData.GetUInt8(); err != nil {
+		log.Error("[pgsql] get flag failed: %v", err)
 		return nil, err
 	}
 
 	if flags != 0 {
+		log.Error("[pgsql] unkown flag: %v", flags)
 		return nil, errors.Errorf("[pgsql] Unkown flags: %v", flags)
 	}
 
+	relId, err := walData.GetInt32()
+	if err != nil {
+		log.Error("[pgsql] get relation id failed: %v", err)
+		return nil, err
+	}
+
 	var rel Relation
+	rel.id = relId
 
-	nameLen, err := walData.GetInt32()
+	nameLen, err := walData.GetUInt8()
 	if err != nil {
+		log.Error("[pgsql] get nameLen failed: %v", err)
 		return nil, err
 	}
 
-	name, err := walData.GetBytes((int)(nameLen))
+	schemaName, err := walData.GetBytes((int)(nameLen))
 	if err != nil {
+		log.Error("[pgsql] get name failed: %v, nameLen: %v", err, nameLen)
 		return nil, err
 	}
 
-	rel.name = string(name)
-
-	if err = ReadAttrs(&walData, &rel); err != nil {
+	nameLen, err = walData.GetUInt8()
+	if err != nil {
+		log.Error("[pgsql] get nameLen failed: %v", err)
 		return nil, err
 	}
+
+	relationName, err := walData.GetBytes((int)(nameLen))
+	if err != nil {
+		log.Error("[pgsql] get name failed: %v, nameLen: %v", err, nameLen)
+		return nil, err
+	}
+
+	rel.name = string(relationName)
+	log.Infof("relation id: %v, schema: %v, relation: %v", relId, string(schemaName), string(relationName))
+
+	if err = readAttrs(&walData, &rel); err != nil {
+		log.Error("[pgsql] read attrs failed: %v", err)
+		return nil, err
+	}
+	log.Infof("[pgsql] get relation: %v", rel)
 	return &rel, nil
 
 }
