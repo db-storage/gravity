@@ -2,7 +2,6 @@ package pgsql_stream
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -37,6 +36,7 @@ type PglogicalTailer struct {
 	//After a Begin, before a Commit
 	inRemoteTxn       bool
 	sourceSchemaStore schema_store.SchemaStore
+	relations         Relations
 }
 
 type filterOpt struct {
@@ -44,99 +44,6 @@ type filterOpt struct {
 	allowUpdate  bool
 	allowDelete  bool
 	allowCommand bool
-}
-
-type StringInfoData struct {
-	msg []byte
-	//The next byte to read
-	cursor int
-}
-
-func (s *StringInfoData) HasMoreData() bool {
-	return s.cursor < len(s.msg)
-}
-
-func (s *StringInfoData) GetUInt8() (uint8, error) {
-	if s.cursor+1 > len(s.msg) {
-		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := uint8(s.msg[s.cursor])
-	s.cursor++
-	return val, nil
-}
-
-func (s *StringInfoData) GetInt8() (int8, error) {
-	if s.cursor+1 > len(s.msg) {
-		return 0, fmt.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := int8(s.msg[s.cursor])
-	s.cursor++
-	return val, nil
-}
-
-func (s *StringInfoData) GetInt64() (int64, error) {
-	if s.cursor+8 > len(s.msg) {
-		return 0, fmt.Errorf("No int64 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := int64(binary.BigEndian.Uint64(s.msg[s.cursor : s.cursor+8]))
-	s.cursor += 8
-	return val, nil
-}
-
-func (s *StringInfoData) GetUInt64() (uint64, error) {
-	if s.cursor+8 > len(s.msg) {
-		return 0, fmt.Errorf("No uint64 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := binary.BigEndian.Uint64(s.msg[s.cursor : s.cursor+8])
-	s.cursor += 8
-	return val, nil
-}
-
-func (s *StringInfoData) GetInt32() (int32, error) {
-	if s.cursor+2 > len(s.msg) {
-		return 0, fmt.Errorf("No int32 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := int32(binary.BigEndian.Uint32(s.msg[s.cursor : s.cursor+4]))
-	s.cursor += 4
-	return val, nil
-}
-
-func (s *StringInfoData) GetUInt32() (uint32, error) {
-	if s.cursor+4 > len(s.msg) {
-		return 0, fmt.Errorf("No uint32 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := binary.BigEndian.Uint32(s.msg[s.cursor : s.cursor+4])
-	s.cursor += 4
-	return val, nil
-}
-
-func (s *StringInfoData) GetInt16() (int16, error) {
-	if s.cursor+2 > len(s.msg) {
-		return 0, fmt.Errorf("No int16 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := int16(binary.BigEndian.Uint16(s.msg[s.cursor : s.cursor+2]))
-	s.cursor += 2
-	return val, nil
-}
-
-func (s *StringInfoData) GetUInt16() (uint16, error) {
-	if s.cursor+2 > len(s.msg) {
-		return 0, fmt.Errorf("No uint16 found, len:%d, cursor:%d", len(s.msg), s.cursor)
-	}
-	val := binary.BigEndian.Uint16(s.msg[s.cursor : s.cursor+2])
-	s.cursor += 2
-	return val, nil
-}
-
-func (s *StringInfoData) GetString() (string, error) {
-	for i := s.cursor; i < len(s.msg); i++ {
-		if s.msg[i] == 0 {
-			result := s.msg[s.cursor:i]
-			s.cursor = i + 1
-			return string(result), nil
-		}
-	}
-	return "", fmt.Errorf("No String found, len:%d, cursor:%d", len(s.msg), s.cursor)
 }
 
 /*
@@ -409,7 +316,7 @@ func (tailer *PglogicalTailer) handleBegin(repMsg *pgx.ReplicationMessage) error
 		return err
 	}
 	log.Infof("remoteLsn: %v, commitTime: %v, remoteXid: %v", remoteLsn, commitTime, remoteXid)
-	s.inRemoteTxn = true
+	tailer.inRemoteTxn = true
 	return nil
 
 }
@@ -433,7 +340,7 @@ func (tailer *PglogicalTailer) handleCommit(repMsg *pgx.ReplicationMessage) erro
 		log.Info("Get txn Commit, commitLsn:%v, endLsn:%v", commitLsn, endLsn)
 		inRemoteTxn = false
 	*/
-	s.inRemoteTxn = false
+	tailer.inRemoteTxn = false
 	return nil
 
 }
@@ -451,6 +358,11 @@ func (tailer *PglogicalTailer) handleOrigin(repMsg *pgx.ReplicationMessage) erro
 
 func (tailer *PglogicalTailer) handleRelation(repMsg *pgx.ReplicationMessage) error {
 	log.Info("[pgsql] get Relation msg")
+	rel, err := RelationFromMsg(repMsg)
+	if err != nil {
+		return err
+	}
+	tailer.relations.UpdateRelation(rel)
 	return nil
 }
 
